@@ -210,6 +210,8 @@ get_nick(Prefix) ->
     [Nick|_Rest] = string:tokens(Prefix, "!@"),
     Nick.
 
+% Message handling:
+
 handle_channel_msg(Channel, Message, Who, State) ->
     Nick = get_nick(Who),
     io:format("~s said: \"~s\" in ~s~n",[Nick, Message, Channel]),
@@ -218,5 +220,6 @@ handle_channel_msg(Channel, Message, Who, State) ->
 
 handle_priv_msg(Message, Who, State) ->
     Nick = get_nick(Who),
+    io:format("~s wrote \"~s\" to me~n",[Nick, Message]),
     send_command("PRIVMSG",[Nick,"Hey.."]),
     State.
