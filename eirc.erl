@@ -10,13 +10,14 @@
 -behaviour(gen_server).
 
 %% API
--export([start/0, stop/0, connect/2]).
+-export([start/0, stop/0, connect/2, send/1, disconnect/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
--record(state, {socket}).
+-record(state, {socket,nick}).
+-record(line, {prefix, command, params}).
 
 %%====================================================================
 %% API
@@ -34,11 +35,16 @@ stop() ->
 send(Text) ->
     gen_server:call(?MODULE, {send, Text ++ "\r\n"}).
 
-connect(Host, Port) ->
-    gen_server:call(?MODULE, {connect, Host, Port}),
-    send("NICK erlbot"),
-    send("USER eb . . : ").
+cast_send(Text) ->
+    gen_server:cast(?MODULE, {send, Text ++ "\r\n"}).
 
+connect(Host, Port) ->
+    gen_server:call(?MODULE, {connect, Host, Port}).
+%    send("NICK erlbot"),
+%    send("USER eb . . : ").
+
+disconnect(Reason) ->
+    gen_server:call(?MODULE ,{disconnect, Reason}).
 
 %%====================================================================
 %% gen_server callbacks
@@ -52,7 +58,7 @@ connect(Host, Port) ->
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
 init([]) ->
-    {ok, #state{}}.
+    {ok, #state{nick="erlbot"}}.
 
 %%--------------------------------------------------------------------
 %% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
@@ -65,7 +71,9 @@ init([]) ->
 %%--------------------------------------------------------------------
 
 handle_call({connect, Host, Port}, _From, State) ->
-    {ok, Sock} = gen_tcp:connect(Host, Port, []),
+    {ok, Sock} = gen_tcp:connect(Host, Port, [list,{packet,line}]),
+    cast_send(format_command("NICK",[State#state.nick])),
+    cast_send(format_command("USER",[State#state.nick,".",".","Erlang bot"])),
     {reply, ok, State#state{socket=Sock}};
 
 handle_call(stop, _From, State) ->
@@ -76,9 +84,14 @@ handle_call({send, Text}, _From, State) ->
     gen_tcp:send(State#state.socket, Text),
     {reply, ok, State};
 
+handle_call({disconnect, Reason}, _From, State) ->
+    gen_tcp:send(State#state.socket, format_command("QUIT",[Reason]) ++ "\r\n"),
+    {reply, ok, State};
+
 handle_call(_Request, _From, State) ->
     Reply = noreply,
     {reply, Reply, State}.
+
 
 %%--------------------------------------------------------------------
 %% Function: handle_cast(Msg, State) -> {noreply, State} |
@@ -86,6 +99,10 @@ handle_call(_Request, _From, State) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
+handle_cast({send, Text}, State) ->
+    gen_tcp:send(State#state.socket, Text),
+    {noreply,  State};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -96,9 +113,10 @@ handle_cast(_Msg, State) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 
-handle_info({tcp, Socket, Text}, State) ->
-    io:format("TEXT:: ~s~n",[Text]),
-    {noreply, State};
+handle_info({tcp, _Socket, Text}, State) ->
+    Line = parse_line(Text),
+    State1 = handle_command(Line,State),
+    {noreply, State1};
 
 handle_info(Info, State) ->
     io:format("unhandled info ~p~n",[Info]),
@@ -124,3 +142,81 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 %%% Internal functions
 %%--------------------------------------------------------------------
+
+parse_line(Line) ->
+    {Line1, LastParam} = 
+	case string:str(Line, " :") of
+	    0 ->
+		{Line, []};
+	    Index ->
+		{string:substr(Line, 1, Index - 1),
+		 [string:substr(Line, Index + 2) -- "\r\n"]}
+	end,
+    Tokens = string:tokens(Line1, " \r\n"),
+    {Prefix, Tokens1} =
+	case Line1 of
+	    [$: | _] ->
+		[$:|PFix] = hd(Tokens),
+		{PFix, tl(Tokens)};
+	    _ ->
+		{none, Tokens}
+	end,
+    [Command | Params] = Tokens1,
+    UCCommand = string:to_upper(Command),
+    #line{prefix = Prefix, command = UCCommand, params = Params ++ LastParam}.
+
+%%
+% handle_command(#line, State) -> State
+% 
+
+handle_command(#line{command = "PING", params = [Reply]},State) ->
+    send_command("PONG",[Reply]),
+    State;
+
+handle_command(#line{command = "PRIVMSG", params = [Place, Message], prefix = Who},State) ->
+    Nic = State#state.nick,
+    case {Place,string:str(Message,Nic)} of 
+	{[$#|_Ch],0} -> State;
+	{[$#|_Ch],_Idx} -> handle_channel_msg(Place, Message, Who,State);
+	{Nic,_} -> handle_priv_msg(Message, Who,State);
+	{_,_} -> State
+    end;
+
+
+handle_command(Line,State) ->
+    io:format("Unhandled command: ~p~n",[Line]),
+    State.
+
+
+send_command(Command, Params) ->
+    cast_send(format_command(Command, Params)).
+%    ParamString = make_param_string(Params),
+%    cast_send(Command ++ ParamString).
+%    io:format("Sending: ~s~n",[Command ++ ParamString]).
+
+format_command(Command, Params) ->
+    Command ++ make_param_string(Params).
+
+make_param_string([]) -> "";
+make_param_string([Last]) -> 
+    case lists:member($\ ,Last) of 
+	true -> " :" ++ Last;
+	false -> " " ++ Last
+    end;
+
+make_param_string([P|Rest]) -> " " ++ P ++ make_param_string(Rest).
+    
+get_nick(Prefix) ->
+    [Nick|_Rest] = string:tokens(Prefix, "!@"),
+    Nick.
+
+handle_channel_msg(Channel, Message, Who, State) ->
+    Nick = get_nick(Who),
+    io:format("~s said: \"~s\" in ~s~n",[Nick, Message, Channel]),
+    send_command("PRIVMSG",[Channel, "Hello " ++ Nick]),
+    State.
+
+handle_priv_msg(Message, Who, State) ->
+    Nick = get_nick(Who),
+    send_command("PRIVMSG",[Nick,"Hey.."]),
+    State.
