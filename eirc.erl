@@ -10,7 +10,14 @@
 -behaviour(gen_server).
 
 %% API
--export([start/0, stop/0, connect/2, send/1, disconnect/1]).
+-export([start/0, 
+	 stop/0, 
+	 connect/2,
+	 send/1,
+	 disconnect/1,
+	 say/2,
+	 send_command/2,
+	 set_nick/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -37,6 +44,9 @@ send(Text) ->
 
 cast_send(Text) ->
     gen_server:cast(?MODULE, {send, Text ++ "\r\n"}).
+
+set_nick(NewNick) ->
+    gen_server:cast(?MODULE, {set_nick, NewNick}).
 
 connect(Host, Port) ->
     gen_server:call(?MODULE, {connect, Host, Port}).
@@ -87,6 +97,9 @@ handle_call({send, Text}, _From, State) ->
 handle_call({disconnect, Reason}, _From, State) ->
     gen_tcp:send(State#state.socket, format_command("QUIT",[Reason]) ++ "\r\n"),
     {reply, ok, State};
+handle_call({set_nick, NewNick}, _From, State) ->
+    gen_tcp:send(State#state.socket, format_command("NICK",[NewNick]) ++ "\r\n"),
+    {reply, ok, State#state{nick=NewNick}};
 
 handle_call(_Request, _From, State) ->
     Reply = noreply,
@@ -187,6 +200,10 @@ handle_command(Line,State) ->
     io:format("Unhandled command: ~p~n",[Line]),
     State.
 
+% sending:
+
+say(Where, Message) ->
+    cast_send(format_command("PRIVMSG",[Where, Message])).
 
 send_command(Command, Params) ->
     cast_send(format_command(Command, Params)).
