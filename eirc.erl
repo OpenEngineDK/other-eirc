@@ -38,8 +38,15 @@
 	       online=false,
 	       bytes_used=0,
 	       spoken_lines=0}).
--record(state, {socket,nick,users=[]}).
+-record(old_state, {version=v1,socket,nick,users=[],bleh=1}).
+-record(state, {version=v2,socket,nick,users=[],ble=1,asd=2}).
 -record(line, {prefix, command, params}).
+
+%% updating state
+
+update_state(S = #old_state{socket=Sock,nick=Nick,users=Users}) ->
+    io:format("Updating State~n",[]),
+    #state{socket=Sock,nick=Nick,users=Users}.
 
 %%====================================================================
 %% API
@@ -126,6 +133,9 @@ init([Host, Port, Channel, NickservPassword]) ->
 %%     cast_send(format_command("USER",[State#state.nick,".",".","Erlang bot"])),
 %%     {reply, ok, State#state{socket=Sock}};
 
+handle_call(R, F, S = #old_state{}) ->
+    handle_call(R,F,update_state(S));
+
 handle_call(stop, _From, State) ->
     gen_tcp:close(State#state.socket),
     {stop, normal, stopped, State};
@@ -154,6 +164,11 @@ handle_call(_Request, _From, State) ->
 %%                                      {stop, Reason, State}
 %% Description: Handling cast messages
 %%--------------------------------------------------------------------
+
+handle_cast(M, S = #old_state{}) ->
+    handle_cast(M, update_state(S));
+
+
 handle_cast({send, Text}, State) ->
     gen_tcp:send(State#state.socket, Text),
     {noreply,  State};
@@ -167,6 +182,10 @@ handle_cast(_Msg, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
+
+handle_info(I, S = #old_state{}) ->
+    handle_info(I, update_state(S));
+
 
 handle_info({tcp, _Socket, Text}, State) ->
     Line = parse_line(Text),
@@ -473,6 +492,9 @@ handle_priv_msg(Message, Who, State) ->
     NewState.
 
 % taking action..
+reply_to_term({url}, _From, _Where, State) ->
+    {"http://t36.dk:8118/",State};
+
 reply_to_term({stats, known_users}, _From, _Where, State) ->
     {io_lib:format("~p users are known",[length(State#state.users)]), State};
 
@@ -487,8 +509,10 @@ reply_to_term({spoke, Who}, _From, _Where, State) when is_list(Who) ->
     User = lists:keysearch(Nick, 2, State#state.users),
         Reply = case User of
 		    {value, _U = #user{last_spoke=never}} -> Nick ++" never said a thing!";
-		    {value, U = #user{}} -> io_lib:format("The last thing ~s said was: \"~s\" at ~w~n",
-							   [U#user.nick, U#user.last_message, U#user.last_spoke]);
+		    {value, U = #user{}} -> io_lib:format("at ~s ~s said: \"~s\"~n",
+							   [format_date(U#user.last_spoke),
+							    U#user.nick,
+							    U#user.last_message]);
 		false -> "Never heard of " ++ Nick
 	    end,
     {Reply,State};
@@ -521,8 +545,8 @@ reply_to_term({seen, Who}, From, _Where, State) when is_list(Who) ->
     io:format("User: ~p~n",[User]),
     Reply = case {get_nick(From),User} of
 		{Nic,{value, _U = #user{nick=Nic}}} -> Nick ++ ", can't see youself?";
-		{_,{value, U = #user{online=false}}} -> io_lib:format("~s was last seen at: ~p",
-							      [U#user.nick, U#user.last_seen]);
+		{_,{value, U = #user{online=false}}} -> io_lib:format("~s was last seen at: ~s",
+							      [U#user.nick, format_date(U#user.last_seen)]);
 		{_,{value, U = #user{online=true}}} -> io_lib:format("~s is online right now!",[U#user.nick]);
 		
 		{_,false} -> "Never heard of " ++ Nick
@@ -536,6 +560,9 @@ reply_to_term({die}, Who, _Where, State) ->
 		false -> "You are not an admin!"
 	    end,
     {Reply,State};
+
+reply_to_term({tell, Who, What}, From, Where, State) when is_atom(Who) ->
+    reply_to_term({tell, atom_to_list(Who), What}, From, Where, State);
 
 reply_to_term({tell, Who, What}, _Who, _Where, State) when is_list(Who), is_list(What) ->
     cast_send(format_command("PRIVMSG",[Who, What])),
@@ -570,3 +597,7 @@ is_admin(Who) ->
 	_ -> false
     end.
 	     
+% formating
+
+format_date({D,T}) ->
+    io_lib:format("~2..0B/~2..0B/~B @ ~2..0B/~2..0B~i",lists:reverse(tuple_to_list(D)) ++ tuple_to_list(T)).

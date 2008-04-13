@@ -51,7 +51,14 @@ init([]) ->
 	    permanent,
 	    10000,
 	    worker,
-	    [eirc]}]}}.
+	    [eirc]},
+	  {tag2,
+	   {eirc_web, start_link, []},
+	   permanent,
+	   10000,
+	   worker,
+	   [eirc_web]}
+	  ]}}.
 
 %%====================================================================
 %% Internal functions
